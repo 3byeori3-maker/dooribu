@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 if (existsSync(".env.local")) process.loadEnvFile(".env.local");
+if (existsSync(".env.development.local")) process.loadEnvFile(".env.development.local");
 
 const expectedEmail = process.env.DOORI_ACCOUNT_EMAIL;
 const expectedSupabaseRef = process.env.DOORI_SUPABASE_PROJECT_REF;
