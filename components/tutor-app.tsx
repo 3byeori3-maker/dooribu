@@ -61,8 +61,7 @@ const DEFAULT_LEARNING_CONTEXT = {
 };
 
 const makeId = () => Math.random().toString(36).slice(2);
-const STUDY_PLAN_STORAGE_KEY = "doori:study-plan:v1";
-const LEARNING_PROFILE_STORAGE_KEY = "doori:learning-profile:v1";
+const LEGACY_PERSONAL_STORAGE_KEYS = ["doori:study-plan:v1", "doori:learning-profile:v1"];
 const TRAILING_QUICK_REPLY_GROUP = /(?:\s*\[[^\[\]\r\n]{1,40}\]){2,}\s*$/u;
 const QUICK_REPLY_ITEM = /\[([^\[\]\r\n]{1,40})\]/gu;
 
@@ -117,13 +116,28 @@ export default function TutorApp() {
   const [learningProfile, setLearningProfile] = useState<LearningProfile | null>(null);
 
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem(LEARNING_PROFILE_STORAGE_KEY);
-      if (saved) setLearningProfile(JSON.parse(saved) as LearningProfile);
-    } catch {
-      window.localStorage.removeItem(LEARNING_PROFILE_STORAGE_KEY);
-    }
+    LEGACY_PERSONAL_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
+    let cancelled = false;
+    void fetch("/api/learning-profile")
+      .then(async (response) => response.ok ? response.json() as Promise<{ profile: LearningProfile | null }> : null)
+      .then((data) => {
+        if (!cancelled) setLearningProfile(data?.profile ?? null);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
   }, []);
+
+  const saveLearningProfile = async (profile: LearningProfile) => {
+    const response = await fetch("/api/learning-profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile }),
+    });
+    const data = (await response.json()) as { profile?: LearningProfile; error?: string };
+    if (!response.ok) throw new Error(data.error || "학습 정보를 저장하지 못했어요.");
+    setLearningProfile(data.profile ?? profile);
+    navigateTo("plan");
+  };
 
   const learningContext = {
     ...DEFAULT_LEARNING_CONTEXT,
@@ -261,6 +275,7 @@ export default function TutorApp() {
   };
 
   const handleSignOut = async () => {
+    LEGACY_PERSONAL_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
     const { error: signOutError } = await createClient().auth.signOut();
     if (signOutError) {
       setError("로그아웃하지 못했어요. 잠시 후 다시 시도해주세요.");
@@ -307,13 +322,10 @@ export default function TutorApp() {
         <StudyPlanScreen learningProfile={learningProfile} learningContext={learningContext} onConnectTextbook={() => navigateTo("profile")} />
       ) : activeSection === "profile" ? (
         <LearningProfileScreen
+          key={learningProfile?.updatedAt ?? "empty-profile"}
           profile={learningProfile}
           onBack={() => navigateTo("plan")}
-          onSave={(profile) => {
-            setLearningProfile(profile);
-            window.localStorage.setItem(LEARNING_PROFILE_STORAGE_KEY, JSON.stringify(profile));
-            navigateTo("plan");
-          }}
+          onSave={saveLearningProfile}
         />
       ) : mode === "home" ? (
         <HomeScreen
@@ -399,19 +411,10 @@ function StudyPlanScreen({ learningProfile, learningContext, onConnectTextbook }
   const [mastery, setMastery] = useState<ConceptMastery[]>([]);
 
   useEffect(() => {
-    try {
-      const savedPlan = window.localStorage.getItem(STUDY_PLAN_STORAGE_KEY);
-      if (savedPlan) setGeneratedPlan(JSON.parse(savedPlan) as GeneratedPlan);
-    } catch {
-      window.localStorage.removeItem(STUDY_PLAN_STORAGE_KEY);
-    }
-
     void fetch("/api/study-plans")
       .then(async (response) => response.ok ? response.json() as Promise<{ plan: GeneratedPlan | null }> : null)
       .then((data) => {
-        if (!data?.plan) return;
-        setGeneratedPlan(data.plan);
-        window.localStorage.setItem(STUDY_PLAN_STORAGE_KEY, JSON.stringify(data.plan));
+        setGeneratedPlan(data?.plan ?? null);
       })
       .catch(() => undefined);
 
@@ -531,7 +534,6 @@ function StudyPlanScreen({ learningProfile, learningContext, onConnectTextbook }
           onClose={() => setIsPlannerOpen(false)}
           onGenerate={(plan, input) => {
             setGeneratedPlan(plan);
-            window.localStorage.setItem(STUDY_PLAN_STORAGE_KEY, JSON.stringify(plan));
             void fetch("/api/study-plans", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -674,7 +676,7 @@ function PlannerWizard({
 function LearningProfileScreen({ profile, onBack, onSave }: {
   profile: LearningProfile | null;
   onBack: () => void;
-  onSave: (profile: LearningProfile) => void;
+  onSave: (profile: LearningProfile) => Promise<void>;
 }) {
   const coverInputRef = useRef<HTMLInputElement>(null);
   const [region, setRegion] = useState(profile?.region ?? "서울");
@@ -687,6 +689,7 @@ function LearningProfileScreen({ profile, onBack, onSave }: {
   const [error, setError] = useState("");
   const [mastery, setMastery] = useState<ConceptMastery[]>([]);
   const [isMasteryLoading, setIsMasteryLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     void fetch("/api/mastery")
@@ -752,6 +755,26 @@ function LearningProfileScreen({ profile, onBack, onSave }: {
   };
 
   const canSave = schoolConfirmed && textbookConfirmed && Boolean(textbook.title.trim() && textbook.publisher.trim());
+
+  const handleSave = async () => {
+    if (!canSave || isSaving) return;
+    setIsSaving(true);
+    setError("");
+    try {
+      await onSave({
+        region,
+        schoolName: schoolName.trim(),
+        schoolConfirmedByUser: true,
+        textbook: { ...textbook, title: textbook.title.trim(), publisher: textbook.publisher.trim() },
+        textbookConfirmedByUser: true,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "학습 정보를 저장하지 못했어요.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   return (
     <section className="profile-screen">
@@ -820,7 +843,7 @@ function LearningProfileScreen({ profile, onBack, onSave }: {
       </div>
 
       {error && <p className="solution-error" role="alert"><AlertTriangle size={16} /> {error}</p>}
-      <button className="save-profile-button" disabled={!canSave} onClick={() => onSave({ region, schoolName: schoolName.trim(), schoolConfirmedByUser: true, textbook: { ...textbook, title: textbook.title.trim(), publisher: textbook.publisher.trim() }, textbookConfirmedByUser: true, updatedAt: new Date().toISOString() })}><CheckCircle2 size={18} /> 확인 정보 저장하고 계획 만들기</button>
+      <button className="save-profile-button" disabled={!canSave || isSaving} onClick={() => void handleSave()}>{isSaving ? <><LoaderCircle className="spin" size={18} /> 저장 중…</> : <><CheckCircle2 size={18} /> 확인 정보 저장하고 계획 만들기</>}</button>
 
       <div className="rights-note">
         <LockKeyhole size={20} />
