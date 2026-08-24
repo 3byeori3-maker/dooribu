@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000">
+  <rect width="1000" height="1000" fill="#fffefb"/>
+  <path d="M45 145H955M45 285H955M45 425H955M45 565H955M45 705H955M45 845H955" stroke="#b8d4ef" stroke-width="2"/>
+  <text x="85" y="105" font-family="Comic Sans MS, Arial, sans-serif" font-size="42" fill="#555">내 풀이</text>
+  <text x="130" y="245" font-family="Comic Sans MS, Arial, sans-serif" font-size="70" fill="#182a47">x + 3 = 8</text>
+  <text x="130" y="385" font-family="Comic Sans MS, Arial, sans-serif" font-size="70" fill="#182a47">x = 8 + 3</text>
+  <text x="130" y="525" font-family="Comic Sans MS, Arial, sans-serif" font-size="70" fill="#182a47">x = 11</text>
+  <path d="M125 410C300 430 500 420 640 410" fill="none" stroke="#d95555" stroke-width="7" stroke-linecap="round" opacity=".65"/>
+</svg>
