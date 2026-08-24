@@ -36,6 +36,9 @@ button { color: inherit; }
 .login-heading > span { display: flex; align-items: center; gap: 6px; color: var(--blue); font-size: 11px; font-weight: 750; }
 .login-heading h1 { margin: 9px 0 8px; font-size: 29px; letter-spacing: -.04em; }
 .login-heading p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.login-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 24px; padding: 4px; background: #f0f3f8; border-radius: 14px; }
+.login-tabs button { min-height: 40px; color: var(--muted); background: transparent; border: 0; border-radius: 11px; font-size: 12px; font-weight: 800; cursor: pointer; }
+.login-tabs button[aria-selected="true"] { color: var(--blue); background: white; box-shadow: 0 3px 10px rgba(29, 53, 91, .1); }
 .login-form { display: grid; gap: 9px; margin-top: 25px; }
 .login-form label { color: #4e5a70; font-size: 11px; font-weight: 750; }
 .login-form > div { min-height: 50px; display: flex; align-items: center; gap: 9px; padding: 0 14px; background: #f8f9fc; border: 1px solid var(--line); border-radius: 14px; }
