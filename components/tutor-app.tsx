@@ -35,9 +35,11 @@ import { generateStudyPlan } from "@/lib/planning/generate-plan";
 import type { GeneratedPlan, PlanInput, WeeklyAvailability } from "@/lib/planning/types";
 import SolutionAnalysisScreen from "@/components/solution-analysis-screen";
 import Scratchpad from "@/components/scratchpad";
+import { ConceptCheckCard, ConceptCheckLoading } from "@/components/concept-check-card";
 import { optimizeImage } from "@/lib/images/optimize";
 import { EMPTY_TEXTBOOK, type LearningProfile, type TextbookMetadata } from "@/lib/learning-profile/types";
 import { createClient } from "@/lib/supabase/client";
+import type { ConceptCheck } from "@/lib/concept-check/types";
 
 type Message = {
   id: string;
@@ -102,6 +104,10 @@ export default function TutorApp() {
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isConceptLoading, setIsConceptLoading] = useState(false);
+  const [conceptFirst, setConceptFirst] = useState(false);
+  const [conceptCheck, setConceptCheck] = useState<ConceptCheck | null>(null);
+  const [conceptSourceQuestion, setConceptSourceQuestion] = useState("");
   const [error, setError] = useState("");
   const [scratchpadOpen, setScratchpadOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -145,10 +151,45 @@ export default function TutorApp() {
     const reader = new FileReader();
     reader.onload = () => {
       setImageDataUrl(String(reader.result));
+      setConceptCheck(null);
+      setConceptSourceQuestion("");
+      setMessages([]);
       setMode("chat");
       setError("");
     };
     reader.readAsDataURL(file);
+  };
+
+  const startConceptCheck = async (questionOverride?: string, imageOverride?: string) => {
+    const sourceQuestion = (questionOverride ?? question).trim();
+    const attachedImage = imageOverride ?? imageDataUrl;
+    if ((!sourceQuestion && !attachedImage) || isConceptLoading) {
+      if (!sourceQuestion && !attachedImage) setError("확인할 문제를 입력하거나 사진을 올려주세요.");
+      return;
+    }
+
+    setMode("chat");
+    setMessages([]);
+    setConceptCheck(null);
+    setConceptSourceQuestion(sourceQuestion);
+    setQuestion("");
+    setError("");
+    setIsConceptLoading(true);
+
+    try {
+      const response = await fetch("/api/concept-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: sourceQuestion, imageDataUrl: attachedImage, learningContext }),
+      });
+      const data = (await response.json()) as { conceptCheck?: ConceptCheck; error?: string };
+      if (!response.ok || !data.conceptCheck) throw new Error(data.error || "개념 확인 응답 오류");
+      setConceptCheck(data.conceptCheck);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "개념을 확인하지 못했어요.");
+    } finally {
+      setIsConceptLoading(false);
+    }
   };
 
   const sendQuestion = async (preset?: string, imageOverride?: string) => {
@@ -196,7 +237,8 @@ export default function TutorApp() {
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && event.ctrlKey) {
       event.preventDefault();
-      void sendQuestion();
+      if (mode === "home" && conceptFirst) void startConceptCheck();
+      else void sendQuestion();
     }
   };
 
@@ -205,6 +247,9 @@ export default function TutorApp() {
     setImageDataUrl(null);
     setQuestion("");
     setError("");
+    setConceptCheck(null);
+    setConceptSourceQuestion("");
+    setConceptFirst(false);
     setMode("home");
     setActiveSection("ask");
   };
@@ -269,7 +314,9 @@ export default function TutorApp() {
           question={question}
           setQuestion={setQuestion}
           handleKeyDown={handleKeyDown}
-          sendQuestion={sendQuestion}
+          submitQuestion={() => conceptFirst ? void startConceptCheck() : void sendQuestion()}
+          conceptFirst={conceptFirst}
+          toggleConceptFirst={() => setConceptFirst((current) => !current)}
           openCamera={() => fileInputRef.current?.click()}
           openSolutionAnalysis={() => navigateTo("solution")}
           error={error}
@@ -280,7 +327,11 @@ export default function TutorApp() {
             imageDataUrl={imageDataUrl}
             openCamera={() => fileInputRef.current?.click()}
             openScratchpad={() => setScratchpadOpen(true)}
-            clearImage={() => setImageDataUrl(null)}
+            clearImage={() => {
+              setImageDataUrl(null);
+              setConceptCheck(null);
+              setConceptSourceQuestion("");
+            }}
           />
           <ChatPanel
             messages={messages}
@@ -290,6 +341,12 @@ export default function TutorApp() {
             sendQuestion={sendQuestion}
             openCamera={() => fileInputRef.current?.click()}
             openScratchpad={() => setScratchpadOpen(true)}
+            hasProblemContext={Boolean(imageDataUrl || conceptSourceQuestion)}
+            conceptCheck={conceptCheck}
+            isConceptLoading={isConceptLoading}
+            startConceptCheck={() => void startConceptCheck()}
+            skipConceptCheck={() => void sendQuestion(conceptSourceQuestion || "이 문제를 어디서부터 시작할지 첫 단계만 알려줘.")}
+            continueAfterConcept={() => void sendQuestion(`${conceptCheck?.bridgePrompt ?? "첫 단계를 스스로 찾도록 질문해줘."}${conceptSourceQuestion ? `\n원래 질문: ${conceptSourceQuestion}` : ""}`)}
             isLoading={isLoading}
             error={error}
             chatEndRef={chatEndRef}
@@ -721,7 +778,9 @@ function HomeScreen({
   question,
   setQuestion,
   handleKeyDown,
-  sendQuestion,
+  submitQuestion,
+  conceptFirst,
+  toggleConceptFirst,
   openCamera,
   openSolutionAnalysis,
   error,
@@ -729,7 +788,9 @@ function HomeScreen({
   question: string;
   setQuestion: (value: string) => void;
   handleKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
-  sendQuestion: (preset?: string) => Promise<void>;
+  submitQuestion: () => void;
+  conceptFirst: boolean;
+  toggleConceptFirst: () => void;
   openCamera: () => void;
   openSolutionAnalysis: () => void;
   error: string;
@@ -754,6 +815,17 @@ function HomeScreen({
         <button onClick={() => document.querySelector<HTMLTextAreaElement>(".home-composer textarea")?.focus()}><PencilLine size={21} /><span>직접 입력</span></button>
       </div>
 
+      <button
+        type="button"
+        className={`concept-first-toggle ${conceptFirst ? "active" : ""}`}
+        aria-pressed={conceptFirst}
+        onClick={toggleConceptFirst}
+      >
+        <Sparkles size={17} />
+        <span><strong>풀이 전에 개념부터 확인</strong><small>{conceptFirst ? "켜짐 · 짧은 진단 후 문제를 풀어요" : "필요한 개념을 먼저 점검해요"}</small></span>
+        <i />
+      </button>
+
       <div className="home-composer">
         <MessageCircleQuestion size={20} />
         <textarea
@@ -763,7 +835,7 @@ function HomeScreen({
           placeholder="예: 왜 이항하면 부호가 바뀌어?"
           rows={1}
         />
-        <button onClick={() => void sendQuestion()} disabled={!question.trim()} aria-label="질문 보내기">
+        <button onClick={submitQuestion} disabled={!question.trim()} aria-label={conceptFirst ? "개념 확인 시작" : "질문 보내기"}>
           <ArrowUp size={20} />
         </button>
       </div>
@@ -825,6 +897,12 @@ function ChatPanel({
   sendQuestion,
   openCamera,
   openScratchpad,
+  hasProblemContext,
+  conceptCheck,
+  isConceptLoading,
+  startConceptCheck,
+  skipConceptCheck,
+  continueAfterConcept,
   isLoading,
   error,
   chatEndRef,
@@ -836,6 +914,12 @@ function ChatPanel({
   sendQuestion: (preset?: string, imageOverride?: string) => Promise<void>;
   openCamera: () => void;
   openScratchpad: () => void;
+  hasProblemContext: boolean;
+  conceptCheck: ConceptCheck | null;
+  isConceptLoading: boolean;
+  startConceptCheck: () => void;
+  skipConceptCheck: () => void;
+  continueAfterConcept: () => void;
   isLoading: boolean;
   error: string;
   chatEndRef: React.RefObject<HTMLDivElement | null>;
@@ -850,7 +934,21 @@ function ChatPanel({
       </div>
 
       <div className="messages">
-        {messages.length === 0 && (
+        {messages.length === 0 && isConceptLoading && <ConceptCheckLoading />}
+        {messages.length === 0 && !isConceptLoading && conceptCheck && (
+          <ConceptCheckCard key={conceptCheck.diagnostic.question} conceptCheck={conceptCheck} onContinue={continueAfterConcept} />
+        )}
+        {messages.length === 0 && !isConceptLoading && !conceptCheck && hasProblemContext && (
+          <div className="pre-solve-choice">
+            <span className="mini-avatar">두</span>
+            <div>
+              <strong>바로 풀기 전에 필요한 개념부터 볼까?</strong>
+              <p>1분만 확인하면 어디서 시작해야 할지 더 쉽게 보여.</p>
+              <div><button className="primary" onClick={startConceptCheck}><Sparkles size={16} /> 개념부터 확인</button><button onClick={skipConceptCheck}>바로 문제 풀기</button></div>
+            </div>
+          </div>
+        )}
+        {messages.length === 0 && !isConceptLoading && !conceptCheck && !hasProblemContext && (
           <div className="starter-message">
             <span className="mini-avatar">두</span>
             <div>
