@@ -24,7 +24,13 @@ export default function LoginPage() {
     });
 
     if (signInError) {
-      setError("로그인 메일을 보내지 못했어요. 잠시 후 다시 시도해주세요.");
+      if (signInError.code === "over_email_send_rate_limit") {
+        setError("이메일 발송 횟수를 초과했어요. 약 1시간 후 다시 시도해주세요.");
+      } else if (signInError.code === "email_address_not_authorized") {
+        setError("현재 테스트에 등록된 이메일만 사용할 수 있어요. 관리자에게 문의해주세요.");
+      } else {
+        setError("로그인 메일을 보내지 못했어요. 잠시 후 다시 시도해주세요.");
+      }
       setStatus("idle");
       return;
     }
