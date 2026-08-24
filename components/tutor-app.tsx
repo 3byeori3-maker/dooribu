@@ -41,6 +41,8 @@ import { EMPTY_TEXTBOOK, type LearningProfile, type TextbookMetadata } from "@/l
 import { createClient } from "@/lib/supabase/client";
 import type { ConceptCheck } from "@/lib/concept-check/types";
 import { MISTAKE_LABELS, type ConceptMastery } from "@/lib/mastery/types";
+import AcademicSettingsForm from "@/components/academic-settings-form";
+import { EXAM_TYPE_LABELS, GRADE_LEVELS, type AcademicSettings } from "@/lib/academic-settings/types";
 
 type Message = {
   id: string;
@@ -114,16 +116,26 @@ export default function TutorApp() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [learningProfile, setLearningProfile] = useState<LearningProfile | null>(null);
+  const [academicSettings, setAcademicSettings] = useState<AcademicSettings | null>(null);
+  const [academicSettingsLoaded, setAcademicSettingsLoaded] = useState(false);
 
   useEffect(() => {
     LEGACY_PERSONAL_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
     let cancelled = false;
-    void fetch("/api/learning-profile")
-      .then(async (response) => response.ok ? response.json() as Promise<{ profile: LearningProfile | null }> : null)
-      .then((data) => {
-        if (!cancelled) setLearningProfile(data?.profile ?? null);
+    void Promise.all([fetch("/api/learning-profile"), fetch("/api/academic-settings")])
+      .then(async ([profileResponse, settingsResponse]) => Promise.all([
+        profileResponse.ok ? profileResponse.json() as Promise<{ profile: LearningProfile | null }> : null,
+        settingsResponse.ok ? settingsResponse.json() as Promise<{ settings: AcademicSettings | null }> : null,
+      ]))
+      .then(([profileData, settingsData]) => {
+        if (cancelled) return;
+        setLearningProfile(profileData?.profile ?? null);
+        setAcademicSettings(settingsData?.settings ?? null);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setAcademicSettingsLoaded(true);
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -139,11 +151,25 @@ export default function TutorApp() {
     navigateTo("plan");
   };
 
+  const saveAcademicSettings = async (settings: AcademicSettings) => {
+    const response = await fetch("/api/academic-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings }),
+    });
+    const data = (await response.json()) as { settings?: AcademicSettings; error?: string };
+    if (!response.ok) throw new Error(data.error || "학년 설정을 저장하지 못했어요.");
+    setAcademicSettings(data.settings ?? settings);
+  };
+
   const learningContext = {
     ...DEFAULT_LEARNING_CONTEXT,
-    grade: learningProfile?.textbook.gradeLevel || DEFAULT_LEARNING_CONTEXT.grade,
+    grade: academicSettings?.gradeLevel || learningProfile?.textbook.gradeLevel || DEFAULT_LEARNING_CONTEXT.grade,
     curriculum: learningProfile?.textbook.curriculum || DEFAULT_LEARNING_CONTEXT.curriculum,
     textbook: learningProfile?.textbook.title || DEFAULT_LEARNING_CONTEXT.textbook,
+    nextExam: academicSettings?.examType && academicSettings.examType !== "none"
+      ? `${EXAM_TYPE_LABELS[academicSettings.examType]} 대비`
+      : "시험 일정 미설정",
   };
 
   const navigateTo = (section: "ask" | "solution" | "plan" | "profile") => {
@@ -295,7 +321,9 @@ export default function TutorApp() {
             <small>AI 수학 선생님</small>
           </span>
         </button>
-        <div className="level-pill"><BookOpen size={15} /> 중1 · 1학기</div>
+        <button className="level-pill" onClick={() => navigateTo("profile")} aria-label="학년과 학기 설정 열기">
+          <BookOpen size={15} /> {academicSettings ? `${academicSettings.gradeLevel} · ${academicSettings.semester}` : "학년 설정"}
+        </button>
         <button className="icon-button" onClick={() => void handleSignOut()} aria-label="로그아웃">
           <LogOut size={18} />
         </button>
@@ -306,7 +334,13 @@ export default function TutorApp() {
         )}
       </header>
 
-      {activeSection === "solution" ? (
+      {!academicSettingsLoaded ? (
+        <section className="academic-settings-loading"><LoaderCircle className="spin" size={24} /><span>학습 설정을 불러오는 중…</span></section>
+      ) : !academicSettings ? (
+        <div className="academic-onboarding-screen">
+          <AcademicSettingsForm settings={null} onboarding onSave={saveAcademicSettings} />
+        </div>
+      ) : activeSection === "solution" ? (
         <SolutionAnalysisScreen
           learningContext={learningContext}
           onBack={() => navigateTo("ask")}
@@ -324,7 +358,9 @@ export default function TutorApp() {
         <LearningProfileScreen
           key={learningProfile?.updatedAt ?? "empty-profile"}
           profile={learningProfile}
+          academicSettings={academicSettings}
           onBack={() => navigateTo("plan")}
+          onSaveAcademicSettings={saveAcademicSettings}
           onSave={saveLearningProfile}
         />
       ) : mode === "home" ? (
@@ -391,11 +427,11 @@ export default function TutorApp() {
         }}
       />
 
-      <nav className="bottom-nav" aria-label="주요 메뉴">
+      {academicSettingsLoaded && academicSettings && <nav className="bottom-nav" aria-label="주요 메뉴">
         <button className={activeSection === "ask" || activeSection === "solution" ? "active" : ""} onClick={() => navigateTo("ask")}><Home size={20} /><span>질문하기</span></button>
         <button className={activeSection === "plan" ? "active" : ""} onClick={() => navigateTo("plan")}><CalendarDays size={20} /><span>학습계획</span></button>
         <button className={activeSection === "profile" ? "active" : ""} onClick={() => navigateTo("profile")}><UserRound size={20} /><span>내 학습</span></button>
-      </nav>
+      </nav>}
     </main>
   );
 }
@@ -673,16 +709,22 @@ function PlannerWizard({
   );
 }
 
-function LearningProfileScreen({ profile, onBack, onSave }: {
+function LearningProfileScreen({ profile, academicSettings, onBack, onSaveAcademicSettings, onSave }: {
   profile: LearningProfile | null;
+  academicSettings: AcademicSettings;
   onBack: () => void;
+  onSaveAcademicSettings: (settings: AcademicSettings) => Promise<void>;
   onSave: (profile: LearningProfile) => Promise<void>;
 }) {
   const coverInputRef = useRef<HTMLInputElement>(null);
   const [region, setRegion] = useState(profile?.region ?? "서울");
   const [schoolName, setSchoolName] = useState(profile?.schoolName ?? "");
   const [schoolConfirmed, setSchoolConfirmed] = useState(profile?.schoolConfirmedByUser ?? false);
-  const [textbook, setTextbook] = useState<TextbookMetadata>(profile?.textbook ?? EMPTY_TEXTBOOK);
+  const [textbook, setTextbook] = useState<TextbookMetadata>(profile?.textbook ?? {
+    ...EMPTY_TEXTBOOK,
+    gradeLevel: academicSettings.gradeLevel,
+    semester: academicSettings.semester,
+  });
   const [textbookConfirmed, setTextbookConfirmed] = useState(profile?.textbookConfirmedByUser ?? false);
   const [coverImage, setCoverImage] = useState<string | null>(null);
   const [isAnalyzingCover, setIsAnalyzingCover] = useState(false);
@@ -779,6 +821,7 @@ function LearningProfileScreen({ profile, onBack, onSave }: {
   return (
     <section className="profile-screen">
       <button className="back-link" onClick={onBack}>‹ 학습계획으로</button>
+      <AcademicSettingsForm settings={academicSettings} onSave={onSaveAcademicSettings} />
       <div className="profile-heading">
         <span className="eyebrow"><TrendingUp size={15} /> 내 학습 데이터</span>
         <h1>개념별 이해도 지도</h1>
@@ -834,7 +877,7 @@ function LearningProfileScreen({ profile, onBack, onSave }: {
             <label><span>저자</span><input value={textbook.authors.join(", ")} onChange={(event) => updateTextbook({ authors: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} placeholder="쉼표로 구분" /></label>
             <label><span>ISBN</span><input value={textbook.isbn} onChange={(event) => updateTextbook({ isbn: event.target.value })} inputMode="numeric" placeholder="선택 입력" /></label>
             <label><span>교육과정</span><input value={textbook.curriculum} onChange={(event) => updateTextbook({ curriculum: event.target.value })} placeholder="예: 2022 개정 교육과정" /></label>
-            <div><label><span>학년</span><select value={textbook.gradeLevel} onChange={(event) => updateTextbook({ gradeLevel: event.target.value })}><option>중1</option><option>중2</option><option>중3</option></select></label><label><span>학기</span><select value={textbook.semester} onChange={(event) => updateTextbook({ semester: event.target.value })}><option>1학기</option><option>2학기</option><option>공통</option></select></label></div>
+            <div><label><span>학년</span><select value={textbook.gradeLevel} onChange={(event) => updateTextbook({ gradeLevel: event.target.value })}>{GRADE_LEVELS.map((grade) => <option key={grade}>{grade}</option>)}</select></label><label><span>학기</span><select value={textbook.semester} onChange={(event) => updateTextbook({ semester: event.target.value })}><option>1학기</option><option>2학기</option><option>공통</option></select></label></div>
           </div>
           {textbook.notes && <p className="ai-metadata-note"><Sparkles size={14} /> AI 안내: {textbook.notes}</p>}
           <label className="metadata-confirm-check"><input type="checkbox" checked={textbookConfirmed} onChange={(event) => setTextbookConfirmed(event.target.checked)} /><span>표지와 대조했으며 위 정보가 맞습니다.</span></label>

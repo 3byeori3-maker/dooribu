@@ -88,10 +88,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "학교와 교과서 정보를 다시 확인해주세요." }, { status: 400 });
   }
 
-  const grade = Number(profile.textbook.gradeLevel.match(/[123]/)?.[0] ?? 1);
   const { error } = await auth.supabase.from("student_profiles").upsert({
     user_id: auth.userId,
-    grade,
     school_name: profile.schoolName,
     textbook_label: `${profile.textbook.title} · ${profile.textbook.publisher}`,
     learning_profile: profile,
