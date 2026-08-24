@@ -12,6 +12,8 @@ import {
   Clock3,
   Home,
   LockKeyhole,
+  LoaderCircle,
+  MapPin,
   MessageCircleQuestion,
   Mic,
   Paperclip,
@@ -28,9 +30,11 @@ import {
 } from "lucide-react";
 import { ChangeEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { generateStudyPlan } from "@/lib/planning/generate-plan";
-import { TEMP_TEXTBOOK_UNITS } from "@/lib/planning/mock-textbook";
 import type { GeneratedPlan, PlanInput, WeeklyAvailability } from "@/lib/planning/types";
 import SolutionAnalysisScreen from "@/components/solution-analysis-screen";
+import Scratchpad from "@/components/scratchpad";
+import { optimizeImage } from "@/lib/images/optimize";
+import { EMPTY_TEXTBOOK, type LearningProfile, type TextbookMetadata } from "@/lib/learning-profile/types";
 
 type Message = {
   id: string;
@@ -40,7 +44,7 @@ type Message = {
 
 const starterQuestions = ["문제 뜻을 모르겠어", "식을 못 세우겠어", "계산하다 막혔어", "어디서부터 할지 모르겠어"];
 
-const learningContext = {
+const DEFAULT_LEARNING_CONTEXT = {
   grade: "중1",
   curriculum: "2022 개정",
   textbook: "학교 지정 수학 1",
@@ -51,6 +55,21 @@ const learningContext = {
 
 const makeId = () => Math.random().toString(36).slice(2);
 const STUDY_PLAN_STORAGE_KEY = "doori:study-plan:v1";
+const LEARNING_PROFILE_STORAGE_KEY = "doori:learning-profile:v1";
+const TRAILING_QUICK_REPLY_GROUP = /(?:\s*\[[^\[\]\r\n]{1,40}\]){2,}\s*$/u;
+const QUICK_REPLY_ITEM = /\[([^\[\]\r\n]{1,40})\]/gu;
+
+const parseQuickReplies = (content: string) => {
+  const group = TRAILING_QUICK_REPLY_GROUP.exec(content);
+  if (!group || group.index === undefined) return { body: content, replies: [] as string[] };
+
+  const replies = Array.from(group[0].matchAll(QUICK_REPLY_ITEM), (match) => match[1].trim())
+    .filter((reply, index, all) => reply.length > 0 && all.indexOf(reply) === index)
+    .slice(0, 4);
+
+  if (replies.length < 2) return { body: content, replies: [] as string[] };
+  return { body: content.slice(0, group.index).trimEnd(), replies };
+};
 
 const WEEKDAYS = [
   { value: 1, label: "월" },
@@ -80,8 +99,26 @@ export default function TutorApp() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [scratchpadOpen, setScratchpadOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [learningProfile, setLearningProfile] = useState<LearningProfile | null>(null);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(LEARNING_PROFILE_STORAGE_KEY);
+      if (saved) setLearningProfile(JSON.parse(saved) as LearningProfile);
+    } catch {
+      window.localStorage.removeItem(LEARNING_PROFILE_STORAGE_KEY);
+    }
+  }, []);
+
+  const learningContext = {
+    ...DEFAULT_LEARNING_CONTEXT,
+    grade: learningProfile?.textbook.gradeLevel || DEFAULT_LEARNING_CONTEXT.grade,
+    curriculum: learningProfile?.textbook.curriculum || DEFAULT_LEARNING_CONTEXT.curriculum,
+    textbook: learningProfile?.textbook.title || DEFAULT_LEARNING_CONTEXT.textbook,
+  };
 
   const navigateTo = (section: "ask" | "solution" | "plan" | "profile") => {
     setActiveSection(section);
@@ -110,9 +147,10 @@ export default function TutorApp() {
     reader.readAsDataURL(file);
   };
 
-  const sendQuestion = async (preset?: string) => {
+  const sendQuestion = async (preset?: string, imageOverride?: string) => {
     const text = (preset ?? question).trim();
-    if ((!text && !imageDataUrl) || isLoading) return;
+    const attachedImage = imageOverride ?? imageDataUrl;
+    if ((!text && !attachedImage) || isLoading) return;
 
     const userMessage: Message = {
       id: makeId(),
@@ -132,7 +170,7 @@ export default function TutorApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question: userMessage.content,
-          imageDataUrl,
+          imageDataUrl: attachedImage,
           history: messages.map(({ role, content }) => ({ role, content })),
           learningContext,
         }),
@@ -198,9 +236,17 @@ export default function TutorApp() {
           }}
         />
       ) : activeSection === "plan" ? (
-        <StudyPlanScreen onConnectTextbook={() => navigateTo("profile")} />
+        <StudyPlanScreen learningProfile={learningProfile} learningContext={learningContext} onConnectTextbook={() => navigateTo("profile")} />
       ) : activeSection === "profile" ? (
-        <LearningProfileScreen onBack={() => navigateTo("plan")} />
+        <LearningProfileScreen
+          profile={learningProfile}
+          onBack={() => navigateTo("plan")}
+          onSave={(profile) => {
+            setLearningProfile(profile);
+            window.localStorage.setItem(LEARNING_PROFILE_STORAGE_KEY, JSON.stringify(profile));
+            navigateTo("plan");
+          }}
+        />
       ) : mode === "home" ? (
         <HomeScreen
           question={question}
@@ -216,6 +262,7 @@ export default function TutorApp() {
           <ProblemPanel
             imageDataUrl={imageDataUrl}
             openCamera={() => fileInputRef.current?.click()}
+            openScratchpad={() => setScratchpadOpen(true)}
             clearImage={() => setImageDataUrl(null)}
           />
           <ChatPanel
@@ -225,6 +272,7 @@ export default function TutorApp() {
             handleKeyDown={handleKeyDown}
             sendQuestion={sendQuestion}
             openCamera={() => fileInputRef.current?.click()}
+            openScratchpad={() => setScratchpadOpen(true)}
             isLoading={isLoading}
             error={error}
             chatEndRef={chatEndRef}
@@ -241,6 +289,16 @@ export default function TutorApp() {
         onChange={handleImage}
       />
 
+      <Scratchpad
+        open={scratchpadOpen}
+        onClose={() => setScratchpadOpen(false)}
+        onSubmit={(drawing) => {
+          setScratchpadOpen(false);
+          setImageDataUrl(drawing);
+          void sendQuestion("내 풀이를 보고, 맞게 한 부분과 처음 고칠 부분을 알려줘.", drawing);
+        }}
+      />
+
       <nav className="bottom-nav" aria-label="주요 메뉴">
         <button className={activeSection === "ask" || activeSection === "solution" ? "active" : ""} onClick={() => navigateTo("ask")}><Home size={20} /><span>질문하기</span></button>
         <button className={activeSection === "plan" ? "active" : ""} onClick={() => navigateTo("plan")}><CalendarDays size={20} /><span>학습계획</span></button>
@@ -250,7 +308,11 @@ export default function TutorApp() {
   );
 }
 
-function StudyPlanScreen({ onConnectTextbook }: { onConnectTextbook: () => void }) {
+function StudyPlanScreen({ learningProfile, learningContext, onConnectTextbook }: {
+  learningProfile: LearningProfile | null;
+  learningContext: typeof DEFAULT_LEARNING_CONTEXT;
+  onConnectTextbook: () => void;
+}) {
   const [isPlannerOpen, setIsPlannerOpen] = useState(false);
   const [generatedPlan, setGeneratedPlan] = useState<GeneratedPlan | null>(null);
   const [showAllSessions, setShowAllSessions] = useState(false);
@@ -354,10 +416,10 @@ function StudyPlanScreen({ onConnectTextbook }: { onConnectTextbook: () => void 
             <div className="textbook-copy">
               <small>내 학교 교과서</small>
               <strong>{learningContext.textbook}</strong>
-              <p>{learningContext.grade} · {learningContext.curriculum}</p>
+              <p>{learningProfile?.schoolName ? `${learningProfile.schoolName} · ` : ""}{learningContext.grade} · {learningContext.curriculum}</p>
             </div>
-            <span className="connection-badge">연결 필요</span>
-            <button onClick={onConnectTextbook}>학교·교과서 연결 <ChevronRight size={17} /></button>
+            <span className={`connection-badge ${learningProfile ? "confirmed" : ""}`}>{learningProfile ? "메타데이터 확인" : "확인 필요"}</span>
+            <button onClick={onConnectTextbook}>{learningProfile ? "학교·교과서 정보 수정" : "학교·교과서 확인"} <ChevronRight size={17} /></button>
           </div>
 
           <div className="progress-card">
@@ -372,6 +434,7 @@ function StudyPlanScreen({ onConnectTextbook }: { onConnectTextbook: () => void 
       {isPlannerOpen && (
         <PlannerWizard
           currentPlan={generatedPlan}
+          textbookTitle={learningProfile?.textbook.title || ""}
           onClose={() => setIsPlannerOpen(false)}
           onGenerate={(plan, input) => {
             setGeneratedPlan(plan);
@@ -393,16 +456,20 @@ function StudyPlanScreen({ onConnectTextbook }: { onConnectTextbook: () => void 
 
 function PlannerWizard({
   currentPlan,
+  textbookTitle,
   onClose,
   onGenerate,
 }: {
   currentPlan: GeneratedPlan | null;
+  textbookTitle: string;
   onClose: () => void;
   onGenerate: (plan: GeneratedPlan, input: PlanInput) => void;
 }) {
   const [step, setStep] = useState<1 | 2>(1);
   const [examDate, setExamDate] = useState("");
-  const [selectedUnits, setSelectedUnits] = useState<string[]>(["expressions"]);
+  const [rangeTitle, setRangeTitle] = useState("문자와 식");
+  const [pageFrom, setPageFrom] = useState(1);
+  const [pageTo, setPageTo] = useState(20);
   const [availability, setAvailability] = useState<WeeklyAvailability>({
     0: 0,
     1: 30,
@@ -419,24 +486,30 @@ function PlannerWizard({
     setExamDate(defaultDate.toISOString().slice(0, 10));
   }, []);
 
-  const toggleUnit = (unitId: string) => {
-    setSelectedUnits((current) =>
-      current.includes(unitId) ? current.filter((id) => id !== unitId) : [...current, unitId],
-    );
-  };
-
   const toggleDay = (day: number) => {
     setAvailability((current) => ({ ...current, [day]: current[day] > 0 ? 0 : 30 }));
   };
 
   const totalWeeklyMinutes = Object.values(availability).reduce((sum, minutes) => sum + minutes, 0);
-  const canContinue = Boolean(examDate) && selectedUnits.length > 0;
+  const pageCount = Math.max(0, pageTo - pageFrom + 1);
+  const estimatedMinutes = Math.max(60, pageCount * 7);
+  const canContinue = Boolean(examDate && rangeTitle.trim()) && pageFrom > 0 && pageTo >= pageFrom;
   const canGenerate = totalWeeklyMinutes > 0;
 
   const handleGenerate = () => {
     if (!canGenerate) return;
-    const input = { examDate, selectedUnitIds: selectedUnits, availability };
-    onGenerate(generateStudyPlan(input, TEMP_TEXTBOOK_UNITS), input);
+    const unitId = "student-entered-range";
+    const input = { examDate, selectedUnitIds: [unitId], availability };
+    const studentRange = [{
+      id: unitId,
+      order: 1,
+      title: rangeTitle.trim(),
+      pageFrom,
+      pageTo,
+      estimatedMinutes,
+      concepts: [`${rangeTitle.trim()} 기본 원리`, `${rangeTitle.trim()} 대표 유형`],
+    }];
+    onGenerate(generateStudyPlan(input, studentRange), input);
   };
 
   return (
@@ -453,19 +526,15 @@ function PlannerWizard({
             <label className="field-label" htmlFor="exam-date">시험일</label>
             <input id="exam-date" className="date-input" type="date" value={examDate} onChange={(event) => setExamDate(event.target.value)} />
 
-            <div className="field-title-row"><span className="field-label">시험 범위</span><small>{selectedUnits.length}개 단원 선택</small></div>
-            <div className="unit-selector">
-              {TEMP_TEXTBOOK_UNITS.map((unit) => {
-                const selected = selectedUnits.includes(unit.id);
-                return (
-                  <button key={unit.id} className={selected ? "selected" : ""} onClick={() => toggleUnit(unit.id)}>
-                    <span>{selected ? <CheckCircle2 size={19} /> : <Circle size={19} />}</span>
-                    <div><small>{unit.order}단원 · p.{unit.pageFrom}~{unit.pageTo}</small><strong>{unit.title}</strong><p>예상 {unit.estimatedMinutes}분</p></div>
-                  </button>
-                );
-              })}
+            <div className="field-title-row"><span className="field-label">시험 범위 직접 입력</span><small>{pageCount}쪽 · 예상 {estimatedMinutes}분</small></div>
+            <div className="exam-range-fields">
+              <label><span>단원 또는 범위 이름</span><input value={rangeTitle} onChange={(event) => setRangeTitle(event.target.value)} placeholder="예: 문자와 식" /></label>
+              <div>
+                <label><span>시작 페이지</span><input type="number" min="1" value={pageFrom} onChange={(event) => setPageFrom(Math.max(1, Number(event.target.value)))} /></label>
+                <label><span>끝 페이지</span><input type="number" min={pageFrom} value={pageTo} onChange={(event) => setPageTo(Math.max(1, Number(event.target.value)))} /></label>
+              </div>
             </div>
-            <p className="temporary-data-note">현재 단원 목록은 임시 데이터이며, 교과서 DB 연결 후 학교 지정 교과서 기준으로 자동 교체됩니다.</p>
+            <p className="temporary-data-note">{textbookTitle ? `${textbookTitle}에서 ` : "교과서에서 "}학교가 안내한 범위를 직접 확인해 입력해주세요. 본문은 복제하거나 저장하지 않아요.</p>
           </div>
         ) : (
           <div className="planner-body">
@@ -507,37 +576,125 @@ function PlannerWizard({
   );
 }
 
-function LearningProfileScreen({ onBack }: { onBack: () => void }) {
+function LearningProfileScreen({ profile, onBack, onSave }: {
+  profile: LearningProfile | null;
+  onBack: () => void;
+  onSave: (profile: LearningProfile) => void;
+}) {
+  const coverInputRef = useRef<HTMLInputElement>(null);
+  const [region, setRegion] = useState(profile?.region ?? "서울");
+  const [schoolName, setSchoolName] = useState(profile?.schoolName ?? "");
+  const [schoolConfirmed, setSchoolConfirmed] = useState(profile?.schoolConfirmedByUser ?? false);
+  const [textbook, setTextbook] = useState<TextbookMetadata>(profile?.textbook ?? EMPTY_TEXTBOOK);
+  const [textbookConfirmed, setTextbookConfirmed] = useState(profile?.textbookConfirmedByUser ?? false);
+  const [coverImage, setCoverImage] = useState<string | null>(null);
+  const [isAnalyzingCover, setIsAnalyzingCover] = useState(false);
+  const [error, setError] = useState("");
+
+  const updateTextbook = (patch: Partial<TextbookMetadata>) => {
+    setTextbook((current) => ({ ...current, ...patch }));
+    setTextbookConfirmed(false);
+  };
+
+  const handleCover = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      setCoverImage(await optimizeImage(file, 1800));
+      setError("");
+    } catch (coverError) {
+      setError(coverError instanceof Error ? coverError.message : "표지를 읽지 못했어요.");
+    }
+  };
+
+  const analyzeCover = async () => {
+    if (!coverImage || isAnalyzingCover) return;
+    setIsAnalyzingCover(true);
+    setError("");
+    try {
+      const response = await fetch("/api/identify-textbook", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageDataUrl: coverImage }),
+      });
+      const data = (await response.json()) as { metadata?: TextbookMetadata; error?: string };
+      if (!response.ok || !data.metadata) throw new Error(data.error || "표지를 분석하지 못했어요.");
+      const candidate = data.metadata;
+      const gradeMatch = candidate.gradeLevel.match(/[123]/)?.[0];
+      const normalizedGrade = gradeMatch ? `중${gradeMatch}` : textbook.gradeLevel;
+      const normalizedSemester = candidate.semester.includes("2")
+        ? "2학기"
+        : candidate.semester.includes("1") ? "1학기" : textbook.semester;
+      setTextbook((current) => ({
+        ...current,
+        ...candidate,
+        title: candidate.title || current.title,
+        publisher: candidate.publisher || current.publisher,
+        authors: candidate.authors.length > 0 ? candidate.authors : current.authors,
+        subject: candidate.subject || current.subject,
+        gradeLevel: normalizedGrade,
+        semester: normalizedSemester,
+        curriculum: candidate.curriculum || current.curriculum,
+        isbn: candidate.isbn || current.isbn,
+      }));
+      setTextbookConfirmed(false);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "표지를 분석하지 못했어요.");
+    } finally {
+      setIsAnalyzingCover(false);
+    }
+  };
+
+  const canSave = schoolConfirmed && textbookConfirmed && Boolean(textbook.title.trim() && textbook.publisher.trim());
+
   return (
     <section className="profile-screen">
       <button className="back-link" onClick={onBack}>‹ 학습계획으로</button>
       <div className="profile-heading">
-        <span className="eyebrow"><School size={15} /> 처음 한 번만 설정하면 돼</span>
-        <h1>학교와 교과서 연결</h1>
-        <p>학교에서 사용하는 교과서를 확인하면 단원·페이지·시험 범위에 맞춰 계획을 만들 수 있어요.</p>
+        <span className="eyebrow"><School size={15} /> 메타데이터만 안전하게 확인</span>
+        <h1>학교와 교과서 확인</h1>
+        <p>학교명과 교과서 표지 정보를 확인해 계획에 표시해요. 교과서 본문이나 문제는 저장하지 않습니다.</p>
       </div>
 
-      <div className="setup-steps">
-        <div className="setup-card active">
-          <span>1</span>
-          <div><small>학교</small><strong>학교 이름 검색</strong><p>지역과 학교명을 입력해 정확히 찾아요.</p></div>
-          <button>학교 찾기</button>
-        </div>
-        <div className="setup-card">
-          <span>2</span>
-          <div><small>교과서 확인</small><strong>표지 또는 ISBN 촬영</strong><p>출판사·저자·교육과정을 자동으로 확인해요.</p></div>
-          <button>표지 촬영</button>
-        </div>
-        <div className="setup-card">
-          <span>3</span>
-          <div><small>학습 일정</small><strong>시험일과 공부 가능한 날</strong><p>계획은 언제든 자동으로 다시 조정돼요.</p></div>
-          <button>일정 입력</button>
-        </div>
+      <div className="profile-form-grid">
+        <section className="metadata-form-card">
+          <div className="metadata-card-title"><span>1</span><div><strong>학교 정보</strong><small>학생이 직접 확인</small></div></div>
+          <div className="school-fields">
+            <label><span>지역</span><select value={region} onChange={(event) => { setRegion(event.target.value); setSchoolConfirmed(false); }}><option>서울</option><option>부산</option><option>대구</option><option>인천</option><option>광주</option><option>대전</option><option>울산</option><option>세종</option><option>경기</option><option>강원</option><option>충북</option><option>충남</option><option>전북</option><option>전남</option><option>경북</option><option>경남</option><option>제주</option></select></label>
+            <label><span>학교명</span><div><MapPin size={17} /><input value={schoolName} onChange={(event) => { setSchoolName(event.target.value); setSchoolConfirmed(false); }} placeholder="예: 두리중학교" /></div></label>
+          </div>
+          <button className={`confirm-metadata-button ${schoolConfirmed ? "confirmed" : ""}`} disabled={!schoolName.trim()} onClick={() => setSchoolConfirmed(true)}>{schoolConfirmed ? <><CheckCircle2 size={17} /> 학교 정보 확인됨</> : "입력한 학교 정보 확인"}</button>
+          <p className="metadata-caution">현재는 공식 학교 재학 인증이 아니라 사용자가 입력 내용을 확인하는 단계입니다.</p>
+        </section>
+
+        <section className="metadata-form-card">
+          <div className="metadata-card-title"><span>2</span><div><strong>교과서 메타데이터</strong><small>표지 AI 후보 + 사용자 최종 확인</small></div></div>
+          <div className="cover-identification">
+            {coverImage ? <div className="cover-preview"><img src={coverImage} alt="교과서 표지 미리보기" /><button onClick={() => setCoverImage(null)} aria-label="표지 사진 지우기"><X size={16} /></button></div> : <button className="cover-upload" onClick={() => coverInputRef.current?.click()}><Camera size={24} /><strong>표지 사진 추가</strong><small>제목과 출판사가 보이게 촬영</small></button>}
+            <button className="analyze-cover-button" disabled={!coverImage || isAnalyzingCover} onClick={() => void analyzeCover()}>{isAnalyzingCover ? <><span className="spin"><LoaderCircle size={18} /></span> 표지 읽는 중…</> : <><Sparkles size={18} /> AI로 정보 후보 채우기</>}</button>
+          </div>
+
+          <div className="textbook-metadata-fields">
+            <label><span>교과서명 *</span><input value={textbook.title} onChange={(event) => updateTextbook({ title: event.target.value })} placeholder="예: 중학교 수학 1" /></label>
+            <label><span>출판사 *</span><input value={textbook.publisher} onChange={(event) => updateTextbook({ publisher: event.target.value })} placeholder="표지의 출판사명" /></label>
+            <label><span>저자</span><input value={textbook.authors.join(", ")} onChange={(event) => updateTextbook({ authors: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} placeholder="쉼표로 구분" /></label>
+            <label><span>ISBN</span><input value={textbook.isbn} onChange={(event) => updateTextbook({ isbn: event.target.value })} inputMode="numeric" placeholder="선택 입력" /></label>
+            <label><span>교육과정</span><input value={textbook.curriculum} onChange={(event) => updateTextbook({ curriculum: event.target.value })} placeholder="예: 2022 개정 교육과정" /></label>
+            <div><label><span>학년</span><select value={textbook.gradeLevel} onChange={(event) => updateTextbook({ gradeLevel: event.target.value })}><option>중1</option><option>중2</option><option>중3</option></select></label><label><span>학기</span><select value={textbook.semester} onChange={(event) => updateTextbook({ semester: event.target.value })}><option>1학기</option><option>2학기</option><option>공통</option></select></label></div>
+          </div>
+          {textbook.notes && <p className="ai-metadata-note"><Sparkles size={14} /> AI 안내: {textbook.notes}</p>}
+          <label className="metadata-confirm-check"><input type="checkbox" checked={textbookConfirmed} onChange={(event) => setTextbookConfirmed(event.target.checked)} /><span>표지와 대조했으며 위 정보가 맞습니다.</span></label>
+          <input ref={coverInputRef} className="visually-hidden" type="file" accept="image/*" capture="environment" onChange={(event) => void handleCover(event)} />
+        </section>
       </div>
+
+      {error && <p className="solution-error" role="alert"><AlertTriangle size={16} /> {error}</p>}
+      <button className="save-profile-button" disabled={!canSave} onClick={() => onSave({ region, schoolName: schoolName.trim(), schoolConfirmedByUser: true, textbook: { ...textbook, title: textbook.title.trim(), publisher: textbook.publisher.trim() }, textbookConfirmedByUser: true, updatedAt: new Date().toISOString() })}><CheckCircle2 size={18} /> 확인 정보 저장하고 계획 만들기</button>
 
       <div className="rights-note">
         <LockKeyhole size={20} />
-        <div><strong>교과서 콘텐츠는 안전하게 사용해요</strong><p>출판사와 정식 계약된 교과서만 전문 기반 학습에 사용하고, 학생에게는 필요한 범위만 보여줍니다.</p></div>
+        <div><strong>‘확인’은 교과서 전문 이용권 연결이 아니에요</strong><p>저장되는 것은 제목·출판사·학년 같은 식별 정보뿐입니다. 전문 기반 학습은 출판사와 정식 계약된 교과서에만 별도로 제공합니다.</p></div>
       </div>
     </section>
   );
@@ -608,10 +765,12 @@ function HomeScreen({
 function ProblemPanel({
   imageDataUrl,
   openCamera,
+  openScratchpad,
   clearImage,
 }: {
   imageDataUrl: string | null;
   openCamera: () => void;
+  openScratchpad: () => void;
   clearImage: () => void;
 }) {
   return (
@@ -634,8 +793,8 @@ function ProblemPanel({
       )}
       <div className="scratch-card">
         <div><PencilLine size={18} /><strong>내 풀이</strong></div>
-        <p>태블릿에서는 이곳에 직접 풀 수 있어요.</p>
-        <button>풀이판 열기 <ChevronRight size={16} /></button>
+        <p>펜·손가락·마우스로 직접 풀 수 있어요.</p>
+        <button onClick={openScratchpad}>풀이판 열기 <ChevronRight size={16} /></button>
       </div>
     </aside>
   );
@@ -648,6 +807,7 @@ function ChatPanel({
   handleKeyDown,
   sendQuestion,
   openCamera,
+  openScratchpad,
   isLoading,
   error,
   chatEndRef,
@@ -656,12 +816,15 @@ function ChatPanel({
   question: string;
   setQuestion: (value: string) => void;
   handleKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
-  sendQuestion: (preset?: string) => Promise<void>;
+  sendQuestion: (preset?: string, imageOverride?: string) => Promise<void>;
   openCamera: () => void;
+  openScratchpad: () => void;
   isLoading: boolean;
   error: string;
   chatEndRef: React.RefObject<HTMLDivElement | null>;
 }) {
+  const latestAssistantMessageId = messages.findLast((message) => message.role === "assistant")?.id;
+
   return (
     <section className="chat-panel">
       <div className="chat-heading">
@@ -686,7 +849,15 @@ function ChatPanel({
         {messages.map((message) => (
           <div key={message.id} className={`message ${message.role}`}>
             {message.role === "assistant" && <span className="mini-avatar">두</span>}
-            <div className="message-bubble">{message.content}</div>
+            {message.role === "assistant" ? (
+              <AssistantMessageContent
+                content={message.content}
+                choicesEnabled={message.id === latestAssistantMessageId && !isLoading}
+                onChoose={(choice) => void sendQuestion(choice)}
+              />
+            ) : (
+              <div className="message-bubble">{message.content}</div>
+            )}
           </div>
         ))}
         {isLoading && (
@@ -702,6 +873,7 @@ function ChatPanel({
       <div className="composer-wrap">
         <div className="composer">
           <button onClick={openCamera} aria-label="사진 첨부"><Paperclip size={21} /></button>
+          <button onClick={openScratchpad} aria-label="풀이판 열기"><PencilLine size={20} /></button>
           <textarea
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
@@ -722,5 +894,37 @@ function ChatPanel({
         <small>Enter 줄바꿈 · Ctrl+Enter 보내기</small>
       </div>
     </section>
+  );
+}
+
+function AssistantMessageContent({
+  content,
+  choicesEnabled,
+  onChoose,
+}: {
+  content: string;
+  choicesEnabled: boolean;
+  onChoose: (choice: string) => void;
+}) {
+  const { body, replies } = parseQuickReplies(content);
+
+  return (
+    <div className="message-bubble assistant-message-content">
+      {body && <span className="message-copy">{body}</span>}
+      {replies.length > 0 && (
+        <div className="message-quick-replies" aria-label="빠른 답변 선택">
+          {replies.map((reply) => (
+            <button
+              key={reply}
+              type="button"
+              disabled={!choicesEnabled}
+              onClick={() => onChoose(reply)}
+            >
+              {reply}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
