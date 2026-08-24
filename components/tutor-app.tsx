@@ -13,6 +13,7 @@ import {
   Home,
   LockKeyhole,
   LoaderCircle,
+  LogOut,
   MapPin,
   MessageCircleQuestion,
   Mic,
@@ -29,12 +30,14 @@ import {
   X,
 } from "lucide-react";
 import { ChangeEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { generateStudyPlan } from "@/lib/planning/generate-plan";
 import type { GeneratedPlan, PlanInput, WeeklyAvailability } from "@/lib/planning/types";
 import SolutionAnalysisScreen from "@/components/solution-analysis-screen";
 import Scratchpad from "@/components/scratchpad";
 import { optimizeImage } from "@/lib/images/optimize";
 import { EMPTY_TEXTBOOK, type LearningProfile, type TextbookMetadata } from "@/lib/learning-profile/types";
+import { createClient } from "@/lib/supabase/client";
 
 type Message = {
   id: string;
@@ -92,6 +95,7 @@ const formatPlanDate = (dateKey: string) => {
 };
 
 export default function TutorApp() {
+  const router = useRouter();
   const [activeSection, setActiveSection] = useState<"ask" | "solution" | "plan" | "profile">("ask");
   const [mode, setMode] = useState<"home" | "chat">("home");
   const [question, setQuestion] = useState("");
@@ -205,6 +209,16 @@ export default function TutorApp() {
     setActiveSection("ask");
   };
 
+  const handleSignOut = async () => {
+    const { error: signOutError } = await createClient().auth.signOut();
+    if (signOutError) {
+      setError("로그아웃하지 못했어요. 잠시 후 다시 시도해주세요.");
+      return;
+    }
+    router.replace("/login");
+    router.refresh();
+  };
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -216,6 +230,9 @@ export default function TutorApp() {
           </span>
         </button>
         <div className="level-pill"><BookOpen size={15} /> 중1 · 1학기</div>
+        <button className="icon-button" onClick={() => void handleSignOut()} aria-label="로그아웃">
+          <LogOut size={18} />
+        </button>
         {mode === "chat" && (
           <button className="icon-button" onClick={resetSession} aria-label="새 질문">
             <RotateCcw size={19} />
