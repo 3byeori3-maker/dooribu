@@ -4,9 +4,10 @@ import { useState } from "react";
 import { ArrowRight, CheckCircle2, CircleHelp, Lightbulb, RotateCcw, Sparkles, TriangleAlert } from "lucide-react";
 import type { ConceptCheck } from "@/lib/concept-check/types";
 
-export function ConceptCheckCard({ conceptCheck, onContinue }: {
+export function ConceptCheckCard({ conceptCheck, onContinue, onAnswered }: {
   conceptCheck: ConceptCheck;
   onContinue: () => void;
+  onAnswered?: (correct: boolean) => void;
 }) {
   const [selectedChoice, setSelectedChoice] = useState<number | null>(null);
   const answered = selectedChoice !== null;
@@ -40,7 +41,10 @@ export function ConceptCheckCard({ conceptCheck, onContinue }: {
                 className={choiceState}
                 disabled={answered}
                 aria-pressed={selectedChoice === index}
-                onClick={() => setSelectedChoice(index)}
+                onClick={() => {
+                  setSelectedChoice(index);
+                  onAnswered?.(index === conceptCheck.diagnostic.correctChoiceIndex);
+                }}
               >
                 <span>{index + 1}</span>{choice}
               </button>

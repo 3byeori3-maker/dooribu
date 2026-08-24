@@ -22,10 +22,18 @@ const tutorInstructions = `
 - 마지막 줄에는 학생이 바로 누를 수 있는 짧은 선택지 2~3개를 [선택지] 형식으로 쓴다.
 `;
 
+const hintLevelInstructions = {
+  1: "힌트 1단계: 답을 드러내지 말고 시작 방향을 찾는 질문 하나만 준다.",
+  2: "힌트 2단계: 써야 할 개념이나 식의 일부를 구체적으로 알려주되 계산 결과는 숨긴다.",
+  3: "힌트 3단계: 다음 계산 단계와 이유를 보여주고, 마지막 계산은 학생이 하게 한다.",
+  4: "풀이 확인 단계: 전체 풀이를 짧게 단계별로 보여주고 끝에 비슷한 확인 질문을 준다.",
+} as const;
+
 type TutorRequest = {
   question?: string;
   imageDataUrl?: string | null;
   history?: Array<{ role: "user" | "assistant"; content: string }>;
+  hintLevel?: number;
   learningContext?: {
     grade?: string;
     curriculum?: string;
@@ -45,6 +53,7 @@ export async function POST(request: Request) {
 
     const body = (await request.json()) as TutorRequest;
     const question = body.question?.trim();
+    const hintLevel = Math.max(1, Math.min(4, Math.round(body.hintLevel ?? 1))) as 1 | 2 | 3 | 4;
 
     if (!question && !body.imageDataUrl) {
       return NextResponse.json({ error: "질문이나 문제 사진을 보내주세요." }, { status: 400 });
@@ -78,7 +87,7 @@ export async function POST(request: Request) {
 
     const response = await client.responses.create({
       model: "gpt-5.4-mini",
-      instructions: tutorInstructions,
+      instructions: `${tutorInstructions}\n현재 응답 규칙: ${hintLevelInstructions[hintLevel]}`,
       input: [
         ...recentHistory.map((item) => ({
           role: item.role,
@@ -90,7 +99,7 @@ export async function POST(request: Request) {
       reasoning: { effort: "low" },
     });
 
-    return NextResponse.json({ answer: response.output_text });
+    return NextResponse.json({ answer: response.output_text, hintLevel });
   } catch (error) {
     console.error("Tutor API error", error instanceof Error ? error.message : "unknown error");
     return NextResponse.json(

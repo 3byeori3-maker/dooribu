@@ -17,6 +17,7 @@ import {
 import { ChangeEvent, useRef, useState } from "react";
 import type { SolutionAnalysis } from "@/lib/solution-analysis/types";
 import { optimizeImage } from "@/lib/images/optimize";
+import { MISTAKE_LABELS } from "@/lib/mastery/types";
 
 type AnalysisFocus = "first_error" | "full_review" | "easier_method";
 
@@ -261,6 +262,12 @@ function AnalysisResult({
             <div className="hint-box"><Sparkles size={17} /><span><small>힌트</small>{analysis.firstError.hint}</span></div>
           </>
         ) : <p>{analysis.firstError.explanation || "현재 사진에서 명확한 풀이 오류는 보이지 않아요."}</p>}
+      </div>
+
+      <div className="mistake-classification" aria-label="오답 원인 분석">
+        <span><SearchCheck size={17} /> 오답 원인</span>
+        <strong>{analysis.mistakeLabel || MISTAKE_LABELS[analysis.mistakeCategory]}</strong>
+        <p>{analysis.primaryConcept} 이해도에 자동 반영했어요.</p>
       </div>
 
       <div className="feedback-card next-feedback">

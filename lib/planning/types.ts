@@ -16,6 +16,7 @@ export type PlanInput = {
   examDate: string;
   selectedUnitIds: string[];
   availability: WeeklyAvailability;
+  weakConcepts?: Array<{ conceptName: string; masteryScore: number }>;
 };
 
 export type PlanSession = {
@@ -37,5 +38,6 @@ export type GeneratedPlan = {
   coveragePercent: number;
   studyDayCount: number;
   status: "balanced" | "tight" | "overloaded";
+  weakConceptCount?: number;
   warning?: string;
 };

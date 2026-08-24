@@ -40,11 +40,13 @@ import { optimizeImage } from "@/lib/images/optimize";
 import { EMPTY_TEXTBOOK, type LearningProfile, type TextbookMetadata } from "@/lib/learning-profile/types";
 import { createClient } from "@/lib/supabase/client";
 import type { ConceptCheck } from "@/lib/concept-check/types";
+import { MISTAKE_LABELS, type ConceptMastery } from "@/lib/mastery/types";
 
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  hintLevel?: number;
 };
 
 const starterQuestions = ["문제 뜻을 모르겠어", "식을 못 세우겠어", "계산하다 막혔어", "어디서부터 할지 모르겠어"];
@@ -192,7 +194,7 @@ export default function TutorApp() {
     }
   };
 
-  const sendQuestion = async (preset?: string, imageOverride?: string) => {
+  const sendQuestion = async (preset?: string, imageOverride?: string, hintLevelOverride?: number) => {
     const text = (preset ?? question).trim();
     const attachedImage = imageOverride ?? imageDataUrl;
     if ((!text && !attachedImage) || isLoading) return;
@@ -209,6 +211,9 @@ export default function TutorApp() {
     setError("");
     setIsLoading(true);
 
+    const userTurnCount = nextMessages.filter((message) => message.role === "user").length;
+    const hintLevel = hintLevelOverride ?? Math.min(3, 1 + Math.floor((userTurnCount - 1) / 2));
+
     try {
       const response = await fetch("/api/tutor", {
         method: "POST",
@@ -218,14 +223,15 @@ export default function TutorApp() {
           imageDataUrl: attachedImage,
           history: messages.map(({ role, content }) => ({ role, content })),
           learningContext,
+          hintLevel,
         }),
       });
-      const data = (await response.json()) as { answer?: string; error?: string };
+      const data = (await response.json()) as { answer?: string; hintLevel?: number; error?: string };
       if (!response.ok || !data.answer) throw new Error(data.error || "응답 오류");
 
       setMessages((current) => [
         ...current,
-        { id: makeId(), role: "assistant", content: data.answer as string },
+        { id: makeId(), role: "assistant", content: data.answer as string, hintLevel: data.hintLevel ?? hintLevel },
       ]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "AI 선생님과 연결하지 못했어요.");
@@ -390,6 +396,7 @@ function StudyPlanScreen({ learningProfile, learningContext, onConnectTextbook }
   const [isPlannerOpen, setIsPlannerOpen] = useState(false);
   const [generatedPlan, setGeneratedPlan] = useState<GeneratedPlan | null>(null);
   const [showAllSessions, setShowAllSessions] = useState(false);
+  const [mastery, setMastery] = useState<ConceptMastery[]>([]);
 
   useEffect(() => {
     try {
@@ -406,6 +413,11 @@ function StudyPlanScreen({ learningProfile, learningContext, onConnectTextbook }
         setGeneratedPlan(data.plan);
         window.localStorage.setItem(STUDY_PLAN_STORAGE_KEY, JSON.stringify(data.plan));
       })
+      .catch(() => undefined);
+
+    void fetch("/api/mastery")
+      .then(async (response) => response.ok ? response.json() as Promise<{ concepts: ConceptMastery[] }> : null)
+      .then((data) => setMastery(data?.concepts ?? []))
       .catch(() => undefined);
   }, []);
   const fallbackItems = [
@@ -461,6 +473,12 @@ function StudyPlanScreen({ learningProfile, learningContext, onConnectTextbook }
         </div>
       )}
 
+      {generatedPlan && (generatedPlan.weakConceptCount ?? 0) > 0 && (
+        <div className="weak-review-banner">
+          <Target size={18} /> 취약 개념 {generatedPlan.weakConceptCount}개를 시험 계획 앞부분에 자동 배치했어요.
+        </div>
+      )}
+
       <div className="plan-grid">
         <div className="plan-main-card">
           <div className="card-title-row">
@@ -509,6 +527,7 @@ function StudyPlanScreen({ learningProfile, learningContext, onConnectTextbook }
         <PlannerWizard
           currentPlan={generatedPlan}
           textbookTitle={learningProfile?.textbook.title || ""}
+          weakConcepts={mastery.map(({ conceptName, masteryScore }) => ({ conceptName, masteryScore }))}
           onClose={() => setIsPlannerOpen(false)}
           onGenerate={(plan, input) => {
             setGeneratedPlan(plan);
@@ -531,11 +550,13 @@ function StudyPlanScreen({ learningProfile, learningContext, onConnectTextbook }
 function PlannerWizard({
   currentPlan,
   textbookTitle,
+  weakConcepts,
   onClose,
   onGenerate,
 }: {
   currentPlan: GeneratedPlan | null;
   textbookTitle: string;
+  weakConcepts: Array<{ conceptName: string; masteryScore: number }>;
   onClose: () => void;
   onGenerate: (plan: GeneratedPlan, input: PlanInput) => void;
 }) {
@@ -573,7 +594,7 @@ function PlannerWizard({
   const handleGenerate = () => {
     if (!canGenerate) return;
     const unitId = "student-entered-range";
-    const input = { examDate, selectedUnitIds: [unitId], availability };
+    const input = { examDate, selectedUnitIds: [unitId], availability, weakConcepts };
     const studentRange = [{
       id: unitId,
       order: 1,
@@ -664,6 +685,16 @@ function LearningProfileScreen({ profile, onBack, onSave }: {
   const [coverImage, setCoverImage] = useState<string | null>(null);
   const [isAnalyzingCover, setIsAnalyzingCover] = useState(false);
   const [error, setError] = useState("");
+  const [mastery, setMastery] = useState<ConceptMastery[]>([]);
+  const [isMasteryLoading, setIsMasteryLoading] = useState(true);
+
+  useEffect(() => {
+    void fetch("/api/mastery")
+      .then(async (response) => response.ok ? response.json() as Promise<{ concepts: ConceptMastery[] }> : null)
+      .then((data) => setMastery(data?.concepts ?? []))
+      .catch(() => undefined)
+      .finally(() => setIsMasteryLoading(false));
+  }, []);
 
   const updateTextbook = (patch: Partial<TextbookMetadata>) => {
     setTextbook((current) => ({ ...current, ...patch }));
@@ -726,10 +757,35 @@ function LearningProfileScreen({ profile, onBack, onSave }: {
     <section className="profile-screen">
       <button className="back-link" onClick={onBack}>‹ 학습계획으로</button>
       <div className="profile-heading">
-        <span className="eyebrow"><School size={15} /> 메타데이터만 안전하게 확인</span>
-        <h1>학교와 교과서 확인</h1>
-        <p>학교명과 교과서 표지 정보를 확인해 계획에 표시해요. 교과서 본문이나 문제는 저장하지 않습니다.</p>
+        <span className="eyebrow"><TrendingUp size={15} /> 내 학습 데이터</span>
+        <h1>개념별 이해도 지도</h1>
+        <p>개념 체크와 풀이 분석 결과가 쌓일수록 취약 개념과 복습 시점을 더 정확히 알려줘요.</p>
       </div>
+
+      <section className="mastery-map" aria-labelledby="mastery-map-title">
+        <div className="mastery-map-heading">
+          <div><Target size={19} /><strong id="mastery-map-title">개념 이해도</strong></div>
+          <span>강함 75점 이상 · 복습 필요 50점 미만</span>
+        </div>
+        {isMasteryLoading ? (
+          <div className="mastery-empty"><LoaderCircle className="spin" size={20} /> 이해도 기록을 불러오는 중…</div>
+        ) : mastery.length === 0 ? (
+          <div className="mastery-empty"><Sparkles size={20} /> 개념 체크나 풀이 분석을 한 번 완료하면 지도가 시작돼요.</div>
+        ) : (
+          <div className="mastery-grid">
+            {mastery.map((concept) => (
+              <article className={`mastery-item ${concept.level}`} key={concept.conceptKey}>
+                <div><span>{concept.level === "strong" ? "잘 알아요" : concept.level === "developing" ? "연습 중" : "복습 필요"}</span><strong>{concept.masteryScore}</strong></div>
+                <h2>{concept.conceptName}</h2>
+                <div className="mastery-track"><i style={{ width: `${concept.masteryScore}%` }} /></div>
+                <p>{concept.attempts}회 학습 · {MISTAKE_LABELS[concept.lastMistakeCategory]}</p>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <div className="profile-subheading"><School size={18} /><div><strong>학교와 교과서 정보</strong><p>계획에 표시할 메타데이터만 관리해요.</p></div></div>
 
       <div className="profile-form-grid">
         <section className="metadata-form-card">
@@ -911,7 +967,7 @@ function ChatPanel({
   question: string;
   setQuestion: (value: string) => void;
   handleKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
-  sendQuestion: (preset?: string, imageOverride?: string) => Promise<void>;
+  sendQuestion: (preset?: string, imageOverride?: string, hintLevelOverride?: number) => Promise<void>;
   openCamera: () => void;
   openScratchpad: () => void;
   hasProblemContext: boolean;
@@ -936,7 +992,23 @@ function ChatPanel({
       <div className="messages">
         {messages.length === 0 && isConceptLoading && <ConceptCheckLoading />}
         {messages.length === 0 && !isConceptLoading && conceptCheck && (
-          <ConceptCheckCard key={conceptCheck.diagnostic.question} conceptCheck={conceptCheck} onContinue={continueAfterConcept} />
+          <ConceptCheckCard
+            key={conceptCheck.diagnostic.question}
+            conceptCheck={conceptCheck}
+            onContinue={continueAfterConcept}
+            onAnswered={(correct) => {
+              void fetch("/api/mastery", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  conceptName: conceptCheck.topic,
+                  source: "concept_check",
+                  outcome: correct ? "correct" : "incorrect",
+                  mistakeCategory: correct ? "none" : "concept_gap",
+                }),
+              }).catch(() => undefined);
+            }}
+          />
         )}
         {messages.length === 0 && !isConceptLoading && !conceptCheck && hasProblemContext && (
           <div className="pre-solve-choice">
@@ -967,8 +1039,14 @@ function ChatPanel({
             {message.role === "assistant" ? (
               <AssistantMessageContent
                 content={message.content}
+                hintLevel={message.hintLevel}
                 choicesEnabled={message.id === latestAssistantMessageId && !isLoading}
                 onChoose={(choice) => void sendQuestion(choice)}
+                onHintLevel={(level) => void sendQuestion(
+                  level === 4 ? "전체 풀이를 단계별로 확인하고 싶어." : `${level}단계 힌트를 더 알려줘.`,
+                  undefined,
+                  level,
+                )}
               />
             ) : (
               <div className="message-bubble">{message.content}</div>
@@ -1014,12 +1092,16 @@ function ChatPanel({
 
 function AssistantMessageContent({
   content,
+  hintLevel,
   choicesEnabled,
   onChoose,
+  onHintLevel,
 }: {
   content: string;
+  hintLevel?: number;
   choicesEnabled: boolean;
   onChoose: (choice: string) => void;
+  onHintLevel: (level: number) => void;
 }) {
   const { body, replies } = parseQuickReplies(content);
 
@@ -1038,6 +1120,17 @@ function AssistantMessageContent({
               {reply}
             </button>
           ))}
+        </div>
+      )}
+      {choicesEnabled && (
+        <div className="hint-level-picker" aria-label="힌트 단계 선택">
+          <small>지금 {hintLevel ?? 1}단계 · 필요한 만큼만 열어봐</small>
+          <div>
+            <button type="button" onClick={() => onHintLevel(1)}>방향만</button>
+            <button type="button" onClick={() => onHintLevel(2)}>핵심 힌트</button>
+            <button type="button" onClick={() => onHintLevel(3)}>다음 단계</button>
+            <button type="button" className="full" onClick={() => onHintLevel(4)}>풀이 확인</button>
+          </div>
         </div>
       )}
     </div>

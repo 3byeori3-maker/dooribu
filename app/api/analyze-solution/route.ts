@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { NextResponse } from "next/server";
 import type { SolutionAnalysis } from "@/lib/solution-analysis/types";
 import { getRequestAuth } from "@/lib/supabase/auth";
+import { recordMastery } from "@/lib/mastery/update";
 
 export const runtime = "nodejs";
 
@@ -26,6 +27,9 @@ const analysisSchema = {
     "recognizedProblem",
     "recognizedWork",
     "summary",
+    "primaryConcept",
+    "mistakeCategory",
+    "mistakeLabel",
     "correctSteps",
     "firstError",
     "nextAction",
@@ -41,6 +45,12 @@ const analysisSchema = {
       items: { type: "string" },
     },
     summary: { type: "string" },
+    primaryConcept: { type: "string", description: "이 풀이에서 평가한 핵심 수학 개념 하나." },
+    mistakeCategory: {
+      type: "string",
+      enum: ["none", "concept_gap", "setup_error", "calculation_error", "sign_error", "notation_error", "reading_error", "incomplete_reasoning", "careless_error", "unclear"],
+    },
+    mistakeLabel: { type: "string", description: "학생에게 보여줄 짧고 쉬운 한국어 오답 원인 이름." },
     correctSteps: {
       type: "array",
       description: "학생 사진에 실제로 적혀 있고 맞는 풀이 줄만 그대로 넣는다. 정정 풀이와 모범 답안은 절대 넣지 않는다.",
@@ -78,6 +88,9 @@ const instructions = `
 - recognizedWork에는 사진에서 실제로 읽힌 풀이 줄만 순서대로 넣는다.
 - correctSteps에는 recognizedWork에 실제로 존재하는 줄 중 맞는 줄만 그대로 복사한다.
 - correctSteps에 학생이 쓰지 않은 정정식, 모범 풀이, 정답을 새로 만들지 않는다.
+- primaryConcept에는 사진으로 판단 가능한 핵심 개념 하나만 짧게 쓴다.
+- mistakeCategory는 첫 오류의 원인 하나만 고른다. 풀이가 맞으면 none, 판독 불가면 unclear로 쓴다.
+- mistakeLabel은 예: 개념 이해 부족, 식 세우기 오류, 계산 오류처럼 학생이 이해할 말로 쓴다.
 `;
 
 const isImageDataUrl = (value: unknown): value is string =>
@@ -153,9 +166,23 @@ export async function POST(request: Request) {
         status: analysis.status,
         confidence: analysis.confidence,
         recognized_problem: analysis.recognizedProblem,
+        primary_concept: analysis.primaryConcept,
+        mistake_category: analysis.mistakeCategory,
         feedback: analysis,
       });
       if (saveError) console.error("Solution analysis metadata save error", saveError.message);
+
+      try {
+        await recordMastery(auth.supabase, auth.userId, {
+          conceptName: analysis.primaryConcept || body.learningContext?.currentUnit || "미분류 개념",
+          source: "solution_analysis",
+          outcome: analysis.status === "partially_correct" ? "partial" : analysis.status,
+          mistakeCategory: analysis.mistakeCategory,
+          metadata: { confidence: analysis.confidence, focus: body.focus ?? "first_error" },
+        });
+      } catch (masteryError) {
+        console.error("Mastery update error", masteryError instanceof Error ? masteryError.message : "unknown error");
+      }
     }
 
     return NextResponse.json({ analysis });

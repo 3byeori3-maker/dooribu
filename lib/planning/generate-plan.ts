@@ -33,9 +33,21 @@ const toDateKey = (date: Date) => {
   return `${year}-${month}-${day}`;
 };
 
-function createTasks(units: TextbookUnit[]): Task[] {
+function createTasks(units: TextbookUnit[], weakConcepts: PlanInput["weakConcepts"] = []): Task[] {
   const learningTasks: Task[] = [];
   const reviewTasks: Task[] = [];
+  const weakReviewTasks: Task[] = weakConcepts
+    .filter((concept) => concept.masteryScore < 60)
+    .sort((a, b) => a.masteryScore - b.masteryScore)
+    .slice(0, 3)
+    .map((concept, index) => ({
+      id: `weak-review-${index}-${concept.conceptName}`,
+      unitId: null,
+      unitTitle: "취약 개념",
+      title: `${concept.conceptName} 취약 개념 복습`,
+      type: "review",
+      minutes: concept.masteryScore < 40 ? 20 : 15,
+    }));
 
   for (const unit of units) {
     const pageRange = `p.${unit.pageFrom}~${unit.pageTo}`;
@@ -95,7 +107,7 @@ function createTasks(units: TextbookUnit[]): Task[] {
     });
   }
 
-  return [...learningTasks, ...reviewTasks];
+  return [...weakReviewTasks, ...learningTasks, ...reviewTasks];
 }
 
 export function generateStudyPlan(
@@ -106,7 +118,7 @@ export function generateStudyPlan(
   const selectedUnits = textbookUnits
     .filter((unit) => input.selectedUnitIds.includes(unit.id))
     .sort((a, b) => a.order - b.order);
-  const tasks = createTasks(selectedUnits);
+  const tasks = createTasks(selectedUnits, input.weakConcepts);
   const examDate = toLocalDate(input.examDate);
   const cursor = toLocalDate(today);
   const availableDates: Array<{ date: Date; minutes: number }> = [];
@@ -175,6 +187,7 @@ export function generateStudyPlan(
     coveragePercent,
     studyDayCount: new Set(sessions.map((session) => session.date)).size,
     status,
+    weakConceptCount: input.weakConcepts?.filter((concept) => concept.masteryScore < 60).length ?? 0,
     warning,
   };
 }
