@@ -1,8 +1,17 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { getSupabaseConfig, isSupabaseConfigured } from "./config";
+import { getSupabaseConfig, isSupabaseConfigured, isTestMode } from "./config";
 
 export async function updateSession(request: NextRequest) {
+  if (isTestMode) {
+    if (request.nextUrl.pathname === "/login") {
+      const homeUrl = request.nextUrl.clone();
+      homeUrl.pathname = "/";
+      return NextResponse.redirect(homeUrl);
+    }
+    return NextResponse.next({ request });
+  }
+
   if (!isSupabaseConfigured()) return NextResponse.next({ request });
 
   const { url, publishableKey } = getSupabaseConfig();

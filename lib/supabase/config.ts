@@ -1,6 +1,9 @@
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabasePublishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
+// 테스트 공개 버전: 정식 계정 기능을 다시 열 때 false로 변경합니다.
+export const isTestMode = true;
+
 export function isSupabaseConfigured() {
   return Boolean(
     supabaseUrl?.startsWith("https://") &&

@@ -1,8 +1,8 @@
-import { isSupabaseConfigured } from "./config";
+import { isSupabaseConfigured, isTestMode } from "./config";
 import { createClient } from "./server";
 
 export async function getRequestAuth() {
-  if (!isSupabaseConfigured()) {
+  if (isTestMode || !isSupabaseConfigured()) {
     return { configured: false as const, userId: null, supabase: null };
   }
 
